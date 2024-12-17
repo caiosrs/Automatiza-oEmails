@@ -1,3 +1,4 @@
+from flask import Flask
 import pyodbc
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -5,6 +6,7 @@ from email.mime.image import MIMEImage
 import smtplib
 from smtplib import SMTPException
 from datetime import datetime, timedelta
+
 import sys, os
 
 def get_resource_path(relative_path):
@@ -12,24 +14,51 @@ def get_resource_path(relative_path):
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
+
     return os.path.join(base_path, relative_path)
+
+# Exemplo de uso:
+img = get_resource_path('Diario de Bordo LOGO.jpeg')
+senha = get_resource_path(r'C:\Reviant\Documentos\Codes\Python\Automatização de Emails\senha temporaria.txt')
+
+app = Flask(__name__)
 
 emails_enviados = set()
 
 def enviar_email():
-    # Lógica completa da função de envio de emails
     hoje = datetime.now()
 
+    if hoje.hour >= 17:
+        return
+
+    # Conexão para verificar os feriados
     conn_old = pyodbc.connect('Driver={SQL Server};Server=sql.informatecservicos.com.br;Database=informatec01;UID=informatec01;PWD=AkY27Vf6xRr_4Nf;')
     cursor_old = conn_old.cursor()
-    
-    # Determina o dia anterior válido
+
+    # Verificar se o dia anterior é feriado
     dia_anterior = hoje - timedelta(days=1)
+
     cursor_old.execute("SELECT COUNT(*) FROM Feriados WHERE Data = ?", dia_anterior.strftime('%Y-%m-%d'))
-    while cursor_old.fetchone()[0] > 0 or dia_anterior.weekday() >= 5:  # Feriado ou fim de semana
-        dia_anterior -= timedelta(days=1)
+    feriado = cursor_old.fetchone()[0] > 0
+
+    if hoje.weekday() == 0:  # Segunda-feira
+        dia_anterior = hoje - timedelta(days=3)  # Voltar para Sexta-feira
+        while True:
+            cursor_old.execute("SELECT COUNT(*) FROM Feriados WHERE Data = ?", dia_anterior.strftime('%Y-%m-%d'))
+            if cursor_old.fetchone()[0] == 0:  # Se não for feriado
+                break
+            dia_anterior -= timedelta(days=1)  # Voltar mais um dia
+    else:
+        while dia_anterior.weekday() >= 5:  # Sábado ou domingo
+            dia_anterior -= timedelta(days=1)  # Voltar um dia
+        while True:
+            cursor_old.execute("SELECT COUNT(*) FROM Feriados WHERE Data = ?", dia_anterior.strftime('%Y-%m-%d'))
+            if cursor_old.fetchone()[0] == 0:  # Se não for feriado
+                break
+            dia_anterior -= timedelta(days=1)  # Voltar mais um dia
 
     conn_old.close()
+
     data_titulo = dia_anterior.strftime('%d/%m')
 
     conn_new = pyodbc.connect('Driver={SQL Server};Server=sql.informatecservicos.com.br;Database=informatec01;UID=informatec01;PWD=AkY27Vf6xRr_4Nf;')
@@ -42,7 +71,9 @@ def enviar_email():
     FROM
         TBDB001 A
     LEFT JOIN
-        TBDB010 B ON A.CODUSUARIO = B.CODUSUARIO AND B.DATA = ?
+        TBDB010 B ON
+        A.CODUSUARIO = B.CODUSUARIO AND
+        B.DATA = ?
     LEFT JOIN
         dpcontrole.DBO.TBUSER001 E ON A.CPF = E.CPF COLLATE SQL_Latin1_General_CP1_CI_AS
     WHERE
@@ -56,6 +87,7 @@ def enviar_email():
     dia_anterior_str = dia_anterior.strftime('%Y-%m-%d')
     cursor_new.execute(query, dia_anterior_str, dia_anterior_str, dia_anterior_str)
     clientes = cursor_new.fetchall()
+
     conn_new.close()
 
     with open(r'senha temporaria.txt') as f:
@@ -63,12 +95,18 @@ def enviar_email():
 
     try:
         for cliente in clientes:
-            _, nome, email, _ = cliente
+            if len(cliente) == 4:
+                _, nome, email, _ = cliente
+            else:
+                continue
+
             if email in emails_enviados:
                 continue
 
             emails_enviados.add(email)
+
             msg = MIMEMultipart()
+
             msg['Subject'] = '[Diário de Bordo] Preenchimento Pendente!'
             msg['From'] = "noreply@informatecservicos.com.br"
             msg['To'] = email
@@ -132,7 +170,7 @@ def enviar_email():
 </html>
             """
 
-            with open(r'Diario de Bordo LOGO.jpeg', 'rb') as img_file:
+            with open(r'C:\Reviant\Documentos\Codes\Python\Automatização de Emails\Diario de Bordo LOGO.jpeg', 'rb') as img_file:
                 img = MIMEImage(img_file.read())
                 img.add_header('Content-Disposition', 'inline', filename='Diario de Bordo LOGO.jpeg')
                 img.add_header('Content-ID', '<diario_bordo_logo>')
@@ -149,6 +187,10 @@ def enviar_email():
     except SMTPException as e:
         print("Erro ao enviar email:", e)
 
+@app.route('/diario')
+def diario():
+    enviar_email()
+    return 'E-mails enviados para o Diário de Bordo'
+
 if __name__ == '__main__':
-    enviar_email()  # Executa a função automaticamente
-    print('E-mails enviados para o Diário de Bordo.')
+    app.run(debug=True)
